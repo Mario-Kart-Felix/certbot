@@ -20,7 +20,7 @@ import pytz
 
 from acme import fields as acme_fields
 from acme import messages
-from acme.client import ClientBase  # pylint: disable=unused-import
+from acme.client import ClientBase
 from certbot import configuration
 from certbot import errors
 from certbot import interfaces
@@ -54,9 +54,9 @@ class Account:
             cross-machine migration scenarios.
 
         """
-        creation_dt = acme_fields.RFC3339Field("creation_dt")
-        creation_host = jose.Field("creation_host")
-        register_to_eff = jose.Field("register_to_eff", omitempty=True)
+        creation_dt: datetime.datetime = acme_fields.rfc3339("creation_dt")
+        creation_host: str = jose.field("creation_host")
+        register_to_eff: str = jose.field("register_to_eff", omitempty=True)
 
     def __init__(self, regr: messages.RegistrationResource, key: jose.JWK,
                  meta: Optional['Meta'] = None) -> None:
@@ -125,6 +125,7 @@ class AccountMemoryStorage(interfaces.AccountStorage):
         except KeyError:
             raise errors.AccountNotFound(account_id)
 
+
 class RegistrationResourceWithNewAuthzrURI(messages.RegistrationResource):
     """A backwards-compatible RegistrationResource with a new-authz URI.
 
@@ -134,7 +135,8 @@ class RegistrationResourceWithNewAuthzrURI(messages.RegistrationResource):
        continue to write out this field for some time so older
        clients don't crash in that scenario.
     """
-    new_authzr_uri = jose.Field('new_authzr_uri')
+    new_authzr_uri: str = jose.field('new_authzr_uri')
+
 
 class AccountFileStorage(interfaces.AccountStorage):
     """Accounts file storage.
@@ -224,20 +226,15 @@ class AccountFileStorage(interfaces.AccountStorage):
                 else:
                     self._symlink_to_accounts_dir(prev_server_path, server_path)
                 return prev_loaded_account
-            raise errors.AccountNotFound(
-                "Account at %s does not exist" % account_dir_path)
+            raise errors.AccountNotFound(f"Account at {account_dir_path} does not exist")
 
         try:
             with open(self._regr_path(account_dir_path)) as regr_file:
-                # TODO: Remove cast when https://github.com/certbot/certbot/pull/9073 is merged.
-                regr = cast(messages.RegistrationResource,
-                            messages.RegistrationResource.json_loads(regr_file.read()))
+                regr = messages.RegistrationResource.json_loads(regr_file.read())
             with open(self._key_path(account_dir_path)) as key_file:
-                # TODO: Remove cast when https://github.com/certbot/certbot/pull/9073 is merged.
-                key = cast(jose.JWK, jose.JWK.json_loads(key_file.read()))
+                key = jose.JWK.json_loads(key_file.read())
             with open(self._metadata_path(account_dir_path)) as metadata_file:
-                # TODO: Remove cast when https://github.com/certbot/certbot/pull/9073 is merged.
-                meta = cast(Account.Meta, Account.Meta.json_loads(metadata_file.read()))
+                meta = Account.Meta.json_loads(metadata_file.read())
         except IOError as error:
             raise errors.AccountStorageError(error)
 
@@ -294,8 +291,7 @@ class AccountFileStorage(interfaces.AccountStorage):
         """
         account_dir_path = self._account_dir_path(account_id)
         if not os.path.isdir(account_dir_path):
-            raise errors.AccountNotFound(
-                "Account at %s does not exist" % account_dir_path)
+            raise errors.AccountNotFound(f"Account at {account_dir_path} does not exist")
         # Step 1: Delete account specific links and the directory
         self._delete_account_dir_for_server_path(account_id, self.config.server_path)
 

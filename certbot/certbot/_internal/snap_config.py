@@ -18,8 +18,8 @@ try:
     from urllib3.connectionpool import HTTPConnectionPool
 except ImportError:
     # Stub imports for oldest requirements, that will never be used in snaps.
-    HTTPConnection = object
-    HTTPConnectionPool = object
+    HTTPConnection = object  # type: ignore[misc,assignment]
+    HTTPConnectionPool = object  # type: ignore[misc,assignment]
 
 
 _ARCH_TRIPLET_MAP = {
@@ -54,7 +54,8 @@ def prepare_env(cli_args: List[str]) -> List[str]:
         session.mount('http://snapd/', _SnapdAdapter())
 
         try:
-            response = session.get('http://snapd/v2/connections?snap=certbot&interface=content')
+            response = session.get('http://snapd/v2/connections?snap=certbot&interface=content',
+                                   timeout=30.0)
             response.raise_for_status()
         except RequestException as e:
             if isinstance(e, HTTPError) and e.response.status_code == 404:

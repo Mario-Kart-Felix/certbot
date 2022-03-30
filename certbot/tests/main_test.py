@@ -18,7 +18,7 @@ import pytz
 
 from certbot import crypto_util, configuration
 from certbot import errors
-from certbot import interfaces  # pylint: disable=unused-import
+from certbot import interfaces
 from certbot import util
 from certbot._internal import account
 from certbot._internal import cli
@@ -70,30 +70,50 @@ class TestHandleCerts(unittest.TestCase):
         self.assertEqual(ret, ("renew", mock_lineage))
         self.assertTrue(mock_handle_migration.called)
 
+    @mock.patch("certbot._internal.main.display_util.yesno")
     @mock.patch("certbot._internal.main.cli.set_by_cli")
-    def test_handle_unexpected_key_type_migration(self, mock_set):
+    def test_handle_unexpected_key_type_migration(self, mock_set, mock_yesno):
         config = mock.Mock()
-        config.key_type = "rsa"
         cert = mock.Mock()
-        cert.private_key_type = "ecdsa"
 
+        # If the key types do not differ, it should be a no-op.
+        config.key_type = "rsa"
+        cert.private_key_type = "rsa"
+        main._handle_unexpected_key_type_migration(config, cert)
+        mock_yesno.assert_not_called()
+        self.assertEqual(config.key_type, cert.private_key_type)
+
+        # If the user confirms the change interactively, the key change should proceed silently.
+        cert.private_key_type = "ecdsa"
+        mock_yesno.return_value = True
+        main._handle_unexpected_key_type_migration(config, cert)
+        self.assertEqual(mock_set.call_count, 2)
+        self.assertEqual(config.key_type, "rsa")
+
+        # User does not interactively confirm the key type change.
+        mock_yesno.return_value = False
+
+        # If --key-type and --cert-name are both set, the key type change should proceed silently.
         mock_set.return_value = True
         main._handle_unexpected_key_type_migration(config, cert)
+        self.assertEqual(config.key_type, "rsa")
 
+        # If neither --key-type nor --cert-name are set, Certbot should keep the old key type.
         mock_set.return_value = False
-        with self.assertRaises(errors.Error) as raised:
-            main._handle_unexpected_key_type_migration(config, cert)
-        self.assertIn("Please provide both --cert-name and --key-type", str(raised.exception))
+        main._handle_unexpected_key_type_migration(config, cert)
+        self.assertEqual(config.key_type, "ecdsa")
 
+        # If --key-type is set and --cert-name isn't, Certbot should error.
+        config.key_type = "rsa"
         mock_set.side_effect = lambda var: var != "certname"
         with self.assertRaises(errors.Error) as raised:
             main._handle_unexpected_key_type_migration(config, cert)
         self.assertIn("Please provide both --cert-name and --key-type", str(raised.exception))
 
+        # If --key-type is not set, Certbot should keep the old key type.
         mock_set.side_effect = lambda var: var != "key_type"
-        with self.assertRaises(errors.Error) as raised:
-            main._handle_unexpected_key_type_migration(config, cert)
-        self.assertIn("Please provide both --cert-name and --key-type", str(raised.exception))
+        main._handle_unexpected_key_type_migration(config, cert)
+        self.assertEqual(config.key_type, "ecdsa")
 
 
 class RunTest(test_util.ConfigTestCase):
@@ -176,6 +196,15 @@ class RunTest(test_util.ConfigTestCase):
             mock.ANY, mock_install_cert.side_effect, mock.ANY, new_or_renewed_cert=True)
         # The final success message shouldn't be shown
         self.mock_success_installation.assert_not_called()
+
+    @mock.patch('certbot._internal.main.plug_sel.choose_configurator_plugins')
+    def test_run_must_staple_not_supported(self, mock_choose):
+        mock_choose.return_value = (null.Installer(self.config, "null"), None)
+        plugins = disco.PluginsRegistry.find_all()
+        self.config.must_staple = True
+        self.assertRaises(errors.NotSupportedError,
+                          main.run,
+                          self.config, plugins)
 
 class CertonlyTest(unittest.TestCase):
     """Tests for certbot._internal.main.certonly."""
@@ -529,7 +558,6 @@ class DeleteIfAppropriateTest(test_util.ConfigTestCase):
     def test_opt_in_deletion(self, mock_get_utility, mock_delete,
             mock_cert_path_to_lineage, mock_full_archive_dir,
             mock_match_and_check_overlaps, mock_renewal_file_for_certname):
-        # pylint: disable = unused-argument
         config = self.config
         config.namespace.delete_after_revoke = True
         config.cert_path = "/some/reasonable/path"
@@ -736,7 +764,7 @@ class MainTest(test_util.ConfigTestCase):
             args += ["--user-agent", ua]
             self._call_no_clientmock(args)
             acme_net.assert_called_once_with(mock.ANY, account=mock.ANY, verify_ssl=True,
-                user_agent=ua)
+                user_agent=ua, alg=jose.RS256)
 
     @mock.patch('certbot._internal.main.plug_sel.record_chosen_plugins')
     @mock.patch('certbot._internal.main.plug_sel.pick_installer')
@@ -1595,10 +1623,11 @@ class UnregisterTest(unittest.TestCase):
         self.mocks['client'].Client.return_value = cb_client
 
         config = mock.MagicMock()
+        config.server = "https://acme.example.com/directory"
         unused_plugins = mock.MagicMock()
 
         res = main.unregister(config, unused_plugins)
-        m = "Could not find existing account to deactivate."
+        m = "Could not find existing account for server https://acme.example.com/directory."
         self.assertEqual(res, m)
         self.assertIs(cb_client.acme.deactivate_registration.called, False)
 
@@ -2025,7 +2054,8 @@ class UpdateAccountTest(test_util.ConfigTestCase):
         mock_storage.find_all.return_value = []
         self.mocks['account'].AccountFileStorage.return_value = mock_storage
         self.assertEqual(self._call(['update_account', '--email', 'user@example.org']),
-                         'Could not find an existing account to update.')
+                         'Could not find an existing account for server'
+                         ' https://acme-v02.api.letsencrypt.org/directory.')
 
     def test_update_account_remove_email(self):
         """Test that --register-unsafely-without-email is handled as no email"""
@@ -2068,6 +2098,107 @@ class UpdateAccountTest(test_util.ConfigTestCase):
         self.assertEqual(mock_storage.update_regr.call_count, 1)
         self.mocks['notify'].assert_called_with(
             'Your e-mail address was updated to user@example.com,user@example.org.')
+
+
+class ShowAccountTest(test_util.ConfigTestCase):
+    """Tests for certbot._internal.main.show_account"""
+
+    def setUp(self):
+        patches = {
+            'account': mock.patch('certbot._internal.main.account'),
+            'atexit': mock.patch('certbot.util.atexit'),
+            'client': mock.patch('certbot._internal.main.client'),
+            'determine_account': mock.patch('certbot._internal.main._determine_account'),
+            'notify': mock.patch('certbot._internal.main.display_util.notify'),
+            'util': test_util.patch_display_util()
+        }
+        self.mocks = { k: patches[k].start() for k in patches }
+        for patch in patches.values():
+            self.addCleanup(patch.stop)
+
+        return super().setUp()
+
+    def _call(self, args):
+        with mock.patch('certbot._internal.main.sys.stdout'), \
+             mock.patch('certbot._internal.main.sys.stderr'):
+            args = ['--config-dir', self.config.config_dir,
+                    '--work-dir', self.config.work_dir,
+                    '--logs-dir', self.config.logs_dir, '--text'] + args
+            return main.main(args[:]) # NOTE: parser can alter its args!
+
+    def _prepare_mock_account(self):
+        mock_storage = mock.MagicMock()
+        mock_account = mock.MagicMock()
+        mock_regr = mock.MagicMock()
+        mock_storage.find_all.return_value = [mock_account]
+        self.mocks['account'].AccountFileStorage.return_value = mock_storage
+        mock_account.regr.body = mock_regr.body
+        self.mocks['determine_account'].return_value = (mock_account, mock.MagicMock())
+
+    def _test_show_account(self, contact):
+        self._prepare_mock_account()
+        mock_client = mock.MagicMock()
+        mock_regr = mock.MagicMock()
+        mock_regr.body.contact = contact
+        mock_regr.uri = 'https://www.letsencrypt-demo.org/acme/reg/1'
+        mock_regr.body.key.thumbprint.return_value = b'foobarbaz'
+        mock_client.acme.query_registration.return_value = mock_regr
+        self.mocks['client'].Client.return_value = mock_client
+
+        args = ['show_account']
+
+        self._call(args)
+
+        self.assertEqual(mock_client.acme.query_registration.call_count, 1)
+
+    def test_no_existing_accounts(self):
+        """Test that no existing account is handled correctly"""
+        mock_storage = mock.MagicMock()
+        mock_storage.find_all.return_value = []
+        self.mocks['account'].AccountFileStorage.return_value = mock_storage
+        self.assertEqual(self._call(['show_account']),
+                         'Could not find an existing account for server'
+                         ' https://acme-v02.api.letsencrypt.org/directory.')
+
+    def test_no_existing_client(self):
+        """Test that issues with the ACME client are handled correctly"""
+        self._prepare_mock_account()
+        mock_client = mock.MagicMock()
+        mock_client.acme = None
+        self.mocks['client'].Client.return_value = mock_client
+        try:
+            self._call(['show_account'])
+        except errors.Error as e:
+            self.assertEqual('ACME client is not set.', str(e))
+
+    def test_no_contacts(self):
+        self._test_show_account(())
+
+        self.assertEqual(self.mocks['notify'].call_count, 1)
+        self.mocks['notify'].assert_has_calls([
+            mock.call('Account details for server https://acme-v02.api.letsencr'
+                      'ypt.org/directory:\n  Account URL: https://www.letsencry'
+                      'pt-demo.org/acme/reg/1\n  Email contact: none')])
+
+    def test_single_email(self):
+        contact = ('mailto:foo@example.com',)
+        self._test_show_account(contact)
+
+        self.assertEqual(self.mocks['notify'].call_count, 1)
+        self.mocks['notify'].assert_has_calls([
+            mock.call('Account details for server https://acme-v02.api.letsencr'
+                      'ypt.org/directory:\n  Account URL: https://www.letsencry'
+                      'pt-demo.org/acme/reg/1\n  Email contact: foo@example.com')])
+
+    def test_double_email(self):
+        contact = ('mailto:foo@example.com', 'mailto:bar@example.com')
+        self._test_show_account(contact)
+
+        self.assertEqual(self.mocks['notify'].call_count, 1)
+        self.mocks['notify'].assert_has_calls([
+            mock.call('Account details for server https://acme-v02.api.letsencr'
+                      'ypt.org/directory:\n  Account URL: https://www.letsencry'
+                      'pt-demo.org/acme/reg/1\n  Email contacts: foo@example.com, bar@example.com')])
 
 
 if __name__ == '__main__':

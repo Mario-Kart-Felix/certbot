@@ -91,9 +91,9 @@ with ``--preferred-challenges``.
 There are also many third-party-plugins_ available. Below we describe in more detail
 the circumstances in which each plugin can be used, and how to use it.
 
-.. _challenges: https://tools.ietf.org/html/draft-ietf-acme-acme-03#section-7
-.. _http-01: https://tools.ietf.org/html/draft-ietf-acme-acme-03#section-7.2
-.. _dns-01: https://tools.ietf.org/html/draft-ietf-acme-acme-03#section-7.4
+.. _challenges: https://datatracker.ietf.org/doc/html/rfc8555#section-8
+.. _http-01: https://datatracker.ietf.org/doc/html/rfc8555#section-8.3
+.. _dns-01: https://datatracker.ietf.org/doc/html/rfc8555#section-8.4
 
 Apache
 ------
@@ -1151,7 +1151,8 @@ certbot will begin rotating logs once there are 1000 logs in the log directory.
 Meaning that once 1000 files are in ``/var/log/letsencrypt`` Certbot will delete
 the oldest one to make room for new logs. The number of subsequent logs can be
 changed by passing the desired number to the command line flag
-``--max-log-backups``.
+``--max-log-backups``. Setting this flag to 0 disables log rotation entirely,
+causing certbot to always append to the same log file.
 
 .. note:: Some distributions, including Debian and Ubuntu, disable
    certbot's internal log rotation in favor of a more traditional

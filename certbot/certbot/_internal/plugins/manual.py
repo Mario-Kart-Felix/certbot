@@ -98,7 +98,7 @@ permitted by DNS standards.)
         super().__init__(*args, **kwargs)
         self.reverter = reverter.Reverter(self.config)
         self.reverter.recovery_routine()
-        self.env: Dict[achallenges.KeyAuthorizationAnnotatedChallenge, Dict[str, str]] = {}
+        self.env: Dict[achallenges.AnnotatedChallenge, Dict[str, str]] = {}
         self.subsequent_dns_challenge = False
         self.subsequent_any_challenge = False
 
@@ -189,10 +189,12 @@ permitted by DNS standards.)
 
     def _perform_achall_with_script(self, achall: achallenges.AnnotatedChallenge,
                                     achalls: List[achallenges.AnnotatedChallenge]) -> None:
-        env = dict(CERTBOT_DOMAIN=achall.domain,
-                   CERTBOT_VALIDATION=achall.validation(achall.account_key),
-                   CERTBOT_ALL_DOMAINS=','.join(one_achall.domain for one_achall in achalls),
-                   CERTBOT_REMAINING_CHALLENGES=str(len(achalls) - achalls.index(achall) - 1))
+        env = {
+            "CERTBOT_DOMAIN": achall.domain,
+            "CERTBOT_VALIDATION": achall.validation(achall.account_key),
+            "CERTBOT_ALL_DOMAINS": ','.join(one_achall.domain for one_achall in achalls),
+            "CERTBOT_REMAINING_CHALLENGES": str(len(achalls) - achalls.index(achall) - 1),
+        }
         if isinstance(achall.chall, challenges.HTTP01):
             env['CERTBOT_TOKEN'] = achall.chall.encode('token')
         else:

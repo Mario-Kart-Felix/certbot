@@ -6,6 +6,7 @@ from typing import Dict
 from typing import Iterable
 from typing import List
 from typing import Optional
+from typing import Sequence
 from typing import Tuple
 from typing import Type
 
@@ -87,8 +88,8 @@ class AuthHandler:
                 # If debug is on, wait for user input before starting the verification process.
                 if config.debug_challenges:
                     display_util.notification(
-                        'Challenges loaded. Press continue to submit to CA. '
-                        'Pass "-v" for more info about challenges.', pause=True)
+                        'Challenges loaded. Press continue to submit to CA.\n' +
+                        self._debug_challenges_msg(achalls, config), pause=True)
             except errors.AuthorizationError as error:
                 logger.critical('Failure in setting up challenges.')
                 logger.info('Attempting to clean up outstanding challenges...')
@@ -249,7 +250,7 @@ class AuthHandler:
         # Make sure to make a copy...
         plugin_pref = self.auth.get_chall_pref(domain)
         if self.pref_challs:
-            plugin_pref_types = set(chall.typ for chall in plugin_pref)
+            plugin_pref_types = {chall.typ for chall in plugin_pref}
             for typ in self.pref_challs:
                 if typ in plugin_pref_types:
                     chall_prefs.append(challenges.Challenge.TYPES[typ])
@@ -272,7 +273,7 @@ class AuthHandler:
         self.auth.cleanup(achalls)
 
     def _challenge_factory(self, authzr: messages.AuthorizationResource,
-                           path: List[int]) -> List[achallenges.AnnotatedChallenge]:
+                           path: Sequence[int]) -> List[achallenges.AnnotatedChallenge]:
         """Construct Namedtuple Challenges
 
         :param messages.AuthorizationResource authzr: authorization
@@ -323,6 +324,44 @@ class AuthHandler:
 
         display_util.notify("".join(msg))
 
+    def _debug_challenges_msg(self, achalls: List[achallenges.AnnotatedChallenge],
+                              config: configuration.NamespaceConfig) -> str:
+        """Construct message for debug challenges prompt
+
+        :param list achalls: A list of
+            :class:`certbot.achallenges.AnnotatedChallenge`.
+        :param certbot.configuration.NamespaceConfig config: current Certbot configuration
+        :returns: Message containing challenge debug info
+        :rtype: str
+
+        """
+        if config.verbose_count > 0:
+            msg = []
+            http01_achalls = {}
+            dns01_achalls = {}
+            for achall in achalls:
+                if isinstance(achall.chall, challenges.HTTP01):
+                    http01_achalls[achall.chall.uri(achall.domain)] = (
+                        achall.validation(achall.account_key) + "\n"
+                    )
+                if isinstance(achall.chall, challenges.DNS01):
+                    dns01_achalls[achall.validation_domain_name(achall.domain)] = (
+                        achall.validation(achall.account_key) + "\n"
+                    )
+            if http01_achalls:
+                msg.append("The following URLs should be accessible from the "
+                           "internet and return the value mentioned:\n")
+                for uri, key_authz in http01_achalls.items():
+                    msg.append(f"URL: {uri}\nExpected value: {key_authz}")
+            if dns01_achalls:
+                msg.append("The following FQDNs should return a TXT resource "
+                           "record with the value mentioned:\n")
+                for fqdn, key_authz_hash in dns01_achalls.items():
+                    msg.append(f"FQDN: {fqdn}\nExpected value: {key_authz_hash}")
+            return "\n" + "\n".join(msg)
+        else:
+            return 'Pass "-v" for more info about challenges.'
+
 
 def challb_to_achall(challb: messages.ChallengeBody, account_key: josepy.JWK,
                      domain: str) -> achallenges.AnnotatedChallenge:
@@ -344,13 +383,12 @@ def challb_to_achall(challb: messages.ChallengeBody, account_key: josepy.JWK,
             challb=challb, domain=domain, account_key=account_key)
     elif isinstance(chall, challenges.DNS):
         return achallenges.DNS(challb=challb, domain=domain)
-    raise errors.Error(
-        "Received unsupported challenge of type: {0}".format(chall.typ))
+    raise errors.Error(f"Received unsupported challenge of type: {chall.typ}")
 
 
 def gen_challenge_path(challbs: List[messages.ChallengeBody],
                        preferences: List[Type[challenges.Challenge]],
-                       combinations: Tuple[List[int], ...]) -> List[int]:
+                       combinations: Tuple[Tuple[int, ...], ...]) -> Tuple[int, ...]:
     """Generate a plan to get authority over the identity.
 
     .. todo:: This can be possibly be rewritten to use resolved_combinations.
@@ -383,8 +421,8 @@ def gen_challenge_path(challbs: List[messages.ChallengeBody],
 
 def _find_smart_path(challbs: List[messages.ChallengeBody],
                      preferences: List[Type[challenges.Challenge]],
-                     combinations: Tuple[List[int], ...]
-                     ) -> List[int]:
+                     combinations: Tuple[Tuple[int, ...], ...]
+                     ) -> Tuple[int, ...]:
     """Find challenge path with server hints.
 
     Can be called if combinations is included. Function uses a simple
@@ -399,7 +437,7 @@ def _find_smart_path(challbs: List[messages.ChallengeBody],
 
     # max_cost is now equal to sum(indices) + 1
 
-    best_combo: Optional[List[int]] = None
+    best_combo: Optional[Tuple[int, ...]] = None
     # Set above completing all of the available challenges
     best_combo_cost = max_cost
 
@@ -422,7 +460,7 @@ def _find_smart_path(challbs: List[messages.ChallengeBody],
 
 
 def _find_dumb_path(challbs: List[messages.ChallengeBody],
-                    preferences: List[Type[challenges.Challenge]]) -> List[int]:
+                    preferences: List[Type[challenges.Challenge]]) -> Tuple[int, ...]:
     """Find challenge path without server hints.
 
     Should be called if the combinations hint is not included by the
@@ -440,7 +478,7 @@ def _find_dumb_path(challbs: List[messages.ChallengeBody],
         else:
             raise _report_no_chall_path(challbs)
 
-    return path
+    return tuple(path)
 
 
 def _report_no_chall_path(challbs: List[messages.ChallengeBody]) -> errors.AuthorizationError:

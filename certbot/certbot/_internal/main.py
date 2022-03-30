@@ -156,17 +156,39 @@ def _handle_unexpected_key_type_migration(config: configuration.NamespaceConfig,
     :param config: Current configuration provided by the client
     :param cert: Matching certificate that could be renewed
     """
-    if not cli.set_by_cli("key_type") or not cli.set_by_cli("certname"):
+    new_key_type = config.key_type.upper()
+    cur_key_type = cert.private_key_type.upper()
 
-        new_key_type = config.key_type.upper()
-        cur_key_type = cert.private_key_type.upper()
+    if new_key_type == cur_key_type:
+        return
 
-        if new_key_type != cur_key_type:
-            msg = ('Are you trying to change the key type of the certificate named {0} '
-                   'from {1} to {2}? Please provide both --cert-name and --key-type on '
-                   'the command line to confirm the change you are trying to make.')
-            msg = msg.format(cert.lineagename, cur_key_type, new_key_type)
-            raise errors.Error(msg)
+    # If both --key-type and --cert-name are provided, we consider the user's intent to
+    # be unambiguous: to change the key type of this lineage.
+    is_confirmed_via_cli = cli.set_by_cli("key_type") and cli.set_by_cli("certname")
+
+    # Failing that, we interactively prompt the user to confirm the change.
+    if is_confirmed_via_cli or display_util.yesno(
+        f'An {cur_key_type} certificate named {cert.lineagename} already exists. Do you want to '
+        f'update its key type to {new_key_type}?',
+        yes_label='Update key type', no_label='Keep existing key type',
+        default=False, force_interactive=False,
+    ):
+        return
+
+    # If --key-type was set on the CLI but the user did not confirm the key type change using
+    # one of the two above methods, their intent is ambiguous. Error out.
+    if cli.set_by_cli("key_type"):
+        raise errors.Error(
+            'Are you trying to change the key type of the certificate named '
+            f'{cert.lineagename} from {cur_key_type} to {new_key_type}? Please provide '
+            'both --cert-name and --key-type on the command line to confirm the change '
+            'you are trying to make.'
+        )
+
+    # The mismatch between the lineage's key type and config.key_type is caused by Certbot's
+    # default value. The user is not asking for a key change: keep the key type of the existing
+    # lineage.
+    config.key_type = cur_key_type.lower()
 
 
 def _handle_subset_cert_request(config: configuration.NamespaceConfig,
@@ -811,7 +833,7 @@ def unregister(config: configuration.NamespaceConfig,
     accounts = account_storage.find_all()
 
     if not accounts:
-        return "Could not find existing account to deactivate."
+        return f"Could not find existing account for server {config.server}."
     prompt = ("Are you sure you would like to irrevocably deactivate "
               "your account?")
     wants_deactivate = display_util.yesno(prompt, yes_label='Deactivate', no_label='Abort',
@@ -846,7 +868,7 @@ def register(config: configuration.NamespaceConfig,
     :param unused_plugins: List of plugins (deprecated)
     :type unused_plugins: plugins_disco.PluginsRegistry
 
-    :returns: `None` or a string indicating and error
+    :returns: `None` or a string indicating an error
     :rtype: None or str
 
     """
@@ -877,7 +899,7 @@ def update_account(config: configuration.NamespaceConfig,
     :param unused_plugins: List of plugins (deprecated)
     :type unused_plugins: plugins_disco.PluginsRegistry
 
-    :returns: `None` or a string indicating and error
+    :returns: `None` or a string indicating an error
     :rtype: None or str
 
     """
@@ -887,7 +909,7 @@ def update_account(config: configuration.NamespaceConfig,
     accounts = account_storage.find_all()
 
     if not accounts:
-        return "Could not find an existing account to update."
+        return f"Could not find an existing account for server {config.server}."
     if config.email is None and not config.register_unsafely_without_email:
         config.email = display_ops.get_email(optional=False)
 
@@ -917,6 +939,53 @@ def update_account(config: configuration.NamespaceConfig,
     else:
         eff.prepare_subscription(config, acc)
         display_util.notify("Your e-mail address was updated to {0}.".format(config.email))
+
+    return None
+
+
+def show_account(config: configuration.NamespaceConfig,
+                   unused_plugins: plugins_disco.PluginsRegistry) -> Optional[str]:
+    """Fetch account info from the ACME server and show it to the user.
+
+    :param config: Configuration object
+    :type config: configuration.NamespaceConfig
+
+    :param unused_plugins: List of plugins (deprecated)
+    :type unused_plugins: plugins_disco.PluginsRegistry
+
+    :returns: `None` or a string indicating an error
+    :rtype: None or str
+
+    """
+    # Portion of _determine_account logic to see whether accounts already
+    # exist or not.
+    account_storage = account.AccountFileStorage(config)
+    accounts = account_storage.find_all()
+
+    if not accounts:
+        return f"Could not find an existing account for server {config.server}."
+
+    acc, acme = _determine_account(config)
+    cb_client = client.Client(config, acc, None, None, acme=acme)
+
+    if not cb_client.acme:
+        raise errors.Error("ACME client is not set.")
+
+    regr = cb_client.acme.query_registration(acc.regr)
+    output = [f"Account details for server {config.server}:",
+              f"  Account URL: {regr.uri}"]
+
+    emails = []
+
+    for contact in regr.body.contact:
+        if contact.startswith('mailto:'):
+            emails.append(contact[7:])
+
+    output.append("  Email contact{}: {}".format(
+                            "s" if len(emails) > 1 else "",
+                            ", ".join(emails) if len(emails) > 0 else "none"))
+
+    display_util.notify("\n".join(output))
 
     return None
 
@@ -1324,6 +1393,20 @@ def run(config: configuration.NamespaceConfig,
         installer, authenticator = plug_sel.choose_configurator_plugins(config, plugins, "run")
     except errors.PluginSelectionError as e:
         return str(e)
+
+    if config.must_staple and installer and "staple-ocsp" not in installer.supported_enhancements():
+        raise errors.NotSupportedError(
+            "Must-Staple extension requested, but OCSP stapling is not supported by the selected "
+            f"installer ({config.installer})\n\n"
+            "You can either:\n"
+            " * remove the --must-staple option from the command line and obtain a certificate "
+            "without the Must-Staple extension, or;\n"
+            " * use the `certonly` subcommand and manually install the certificate into the  "
+            "intended service (e.g. webserver). You must also then manually enable OCSP stapling, "
+            "as it is required for certificates with the Must-Staple extension to "
+            "function properly.\n"
+            " * choose a different installer plugin (such as --nginx or --apache), if possible."
+        )
 
     # Preflight check for enhancement support by the selected installer
     if not enhancements.are_supported(config, installer):

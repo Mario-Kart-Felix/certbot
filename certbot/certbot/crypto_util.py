@@ -143,7 +143,7 @@ def generate_csr(privkey: util.Key, names: Union[List[str], Set[str]], path: str
     :type privkey: :class:`certbot.util.Key`
     :param set names: `str` names to include in the CSR
     :param str path: Certificate save directory.
-    :param bool must_staple: If true, include the TLS Feature extension "OCSP Must Staple"
+    :param bool must_staple: If true, include the TLS Feature extension "OCSP Must-Staple"
     :param bool strict_permissions: If true and path exists, an exception is raised if
         the directory doesn't have 0755 permissions or isn't owned by the current user.
 
@@ -290,8 +290,11 @@ def make_key(bits: int = 1024, key_type: str = "rsa",
         try:
             name = elliptic_curve.upper()
             if name in ('SECP256R1', 'SECP384R1', 'SECP521R1'):
+                curve = getattr(ec, elliptic_curve.upper())
+                if not curve:
+                    raise errors.Error(f"Invalid curve type: {elliptic_curve}")
                 _key = ec.generate_private_key(
-                    curve=getattr(ec, elliptic_curve.upper(), None)(),
+                    curve=curve(),
                     backend=default_backend()
                 )
             else:
